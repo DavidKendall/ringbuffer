@@ -2,6 +2,7 @@
 #include <ucos_ii.h>
 #include <mbed.h>
 #include <display.h>
+#include "buffer.h"
 
 /*
 *********************************************************************************************************
@@ -13,7 +14,8 @@ typedef enum {
 	APP_TASK_BUTTONS_PRIO = 4,
 	APP_TASK_POT_PRIO,
   APP_TASK_LED1_PRIO,
-  APP_TASK_LED2_PRIO
+  APP_TASK_LED2_PRIO,
+	APP_TASK_LCD_PRIO
 } taskPriorities_t;
 
 /*
@@ -26,11 +28,14 @@ typedef enum {
 #define  APP_TASK_POT_STK_SIZE               256
 #define  APP_TASK_LED1_STK_SIZE              256
 #define  APP_TASK_LED2_STK_SIZE              256
+#define  APP_TASK_LCD_STK_SIZE               256
 
 static OS_STK appTaskButtonsStk[APP_TASK_BUTTONS_STK_SIZE];
 static OS_STK appTaskPotStk[APP_TASK_POT_STK_SIZE];
 static OS_STK appTaskLED1Stk[APP_TASK_LED1_STK_SIZE];
 static OS_STK appTaskLED2Stk[APP_TASK_LED2_STK_SIZE];
+static OS_STK appTaskLCDStk[APP_TASK_LCD_STK_SIZE];
+
 
 /*
 *********************************************************************************************************
@@ -42,6 +47,7 @@ static void appTaskButtons(void *pdata);
 static void appTaskPot(void *pdata);
 static void appTaskLED1(void *pdata);
 static void appTaskLED2(void *pdata);
+static void appTaskLCD(void *pdata);
 
 /*
 *********************************************************************************************************
@@ -49,6 +55,11 @@ static void appTaskLED2(void *pdata);
 *********************************************************************************************************
 */
 
+typedef enum {
+	RB_LED1 = 0,
+	RB_LED2,
+	RB_POT
+} deviceNames_t;
 
 typedef enum {
 	JLEFT = 0,
@@ -78,8 +89,6 @@ static Display *d = Display::theDisplay();
 static bool flashing[2] = {false, false};
 static int32_t flashingDelay[2] = {FLASH_INITIAL_DELAY, FLASH_INITIAL_DELAY};
 
-OS_EVENT *lcdSem;
-
 /*
 *********************************************************************************************************
 *                                            GLOBAL FUNCTION DEFINITIONS
@@ -87,12 +96,6 @@ OS_EVENT *lcdSem;
 */
 
 int main() {
-
-	/* Initialise the display */	
-	d->fillScreen(WHITE);
-	d->setTextColor(BLACK, WHITE);
-  d->setCursor(2, 2);
-	d->printf("EN0572 Lab 07");
 
   /* Initialise the OS */
   OSInit();                                                   
@@ -118,9 +121,13 @@ int main() {
                (OS_STK *)&appTaskLED2Stk[APP_TASK_LED2_STK_SIZE - 1],
                APP_TASK_LED2_PRIO);
 							 
-	lcdSem = OSSemCreate(1);
-
-  
+  OSTaskCreate(appTaskLCD,                               
+               (void *)0,
+               (OS_STK *)&appTaskLCDStk[APP_TASK_LED2_STK_SIZE - 1],
+               APP_TASK_LCD_PRIO);
+							 
+  safeBufferInit();
+							 
   /* Start the OS */
   OSStart();                                                  
   
@@ -158,51 +165,86 @@ static void appTaskButtons(void *pdata) {
 
 static void appTaskPot(void *pdata) {
 	float potVal;
-	uint8_t status;
+	message_t msg;
 	
-	d->drawRect(109, 12, 102, 10, BLACK);
   while (true) {
 		potVal = 1.0F - potentiometer.read();
 		flashingDelay[1] = int(potVal * 1000);
-		OSSemPend(lcdSem, 0, &status);
-    d->setCursor(2, 12);
-		d->printf("Pot value : %1.2f\n", potVal);	
-    barChart(potVal);		
-		status = OSSemPost(lcdSem);
+		msg.id = RB_POT;
+		msg.fdata[0] = potVal;
+		safeBufferPut(&msg);
     OSTimeDlyHMSM(0,0,0,200);
   }
 }
 
 static void appTaskLED1(void *pdata) {
-	uint8_t status;
+	message_t msg;
 	
   while (true) {
 		if (flashing[0]) {
       led1 = !led1;
 		}
-		OSSemPend(lcdSem, 0, &status);
-		d->setCursor(2,42);
-		d->printf("(LED1) F: %s, D: %04d", flashing[0] ? " ON" : "OFF", flashingDelay[0]);
-		status = OSSemPost(lcdSem);
+		msg.id = RB_LED1;
+		msg.data[0] = flashing[0];
+		msg.data[1] = flashingDelay[0];
+		safeBufferPut(&msg);
     OSTimeDly(flashingDelay[0]);
   }
 }
 
 
 static void appTaskLED2(void *pdata) {
-	uint8_t status;
+	message_t msg;
 	
   while (true) {
 		if (flashing[1]) {
       led2 = !led2;
 		}
-		OSSemPend(lcdSem, 0, &status);
-		d->setCursor(2,52);
-		d->printf("(LED2) F: %s, D: %04d", flashing[1] ? " ON" : "OFF", flashingDelay[1]);
-		status = OSSemPost(lcdSem);
+		msg.id = RB_LED2;
+		msg.data[0] = flashing[1];
+		msg.data[1] = flashingDelay[1];
+		safeBufferPut(&msg);
     OSTimeDly(flashingDelay[1]);
   } 
 }
+
+static void appTaskLCD(void *pdata) {
+	message_t msg;
+	
+	/* Initialise the display */	
+	d->fillScreen(WHITE);
+	d->setTextColor(BLACK, WHITE);
+  d->setCursor(2, 2);
+	d->printf("EN0572 Lab 08");
+	d->drawRect(109, 12, 102, 10, BLACK);
+	
+	while (true) {
+		safeBufferGet(&msg);
+		switch (msg.id) {
+			case RB_LED1 : {
+ 		    d->setCursor(2,42);
+		    d->printf("(LED1) F: %s, D: %04d", msg.data[0] ? " ON" : "OFF", msg.data[1]);
+				break;
+			}
+			case RB_LED2 : {
+ 		    d->setCursor(2,52);
+		    d->printf("(LED2) F: %s, D: %04d", msg.data[0] ? " ON" : "OFF", msg.data[1]);
+				break;
+			}
+			case RB_POT : {
+        d->setCursor(2, 12);
+		    d->printf("Pot value : %1.2f\n", msg.fdata[0]);	
+        barChart(msg.fdata[0]);		
+				break;
+			}
+			default : {
+				break;
+			}
+		}
+	}
+}
+
+
 
 /*
  * @brief buttonPressedAndReleased(button) tests to see if the button has
